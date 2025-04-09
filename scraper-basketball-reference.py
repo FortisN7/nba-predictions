@@ -56,11 +56,11 @@ async def scrape_season(season):
             continue
 
         html = await get_html(url, '#all_schedule')
-        with open(save_path, 'w+', encoding='utf-8') as f:
+        with open(save_path, 'w+', encoding='utf-8', errors='replace') as f:
             f.write(html)
 
 async def scrape_game(standings_file):
-    with open(standings_file, 'r', encoding='utf-8') as f:
+    with open(standings_file, 'r', encoding='utf-8', errors='replace') as f:
         html = f.read()
 
     soup = BeautifulSoup(html, features='html.parser')
@@ -77,7 +77,7 @@ async def scrape_game(standings_file):
         html = await get_html(url, '#content')
         if not html:
             continue
-        with open(save_path, 'w+', encoding='utf-8') as f:
+        with open(save_path, 'w+', encoding='utf-8', errors='replace') as f:
             f.write(html)
 
 async def main():
@@ -89,19 +89,16 @@ async def main():
         else:
             print(f"Already exists: {directory}")
 
-    # If there are no files in the STANDINGS_DIR, scrape the seasons html
-    if not os.listdir(STANDINGS_DIR):
-        for season in SEASONS:
-            await scrape_season(season)
+    # Scrape the seasons html from seasons we don't have data from (First-run Time Estimate: 1 minute)
+    for season in SEASONS:
+        await scrape_season(season)
     
-    # If there are no scores in the SCORES_DIR, scrape the scores html
+    # Scrape the scores html from months we don't have data from (First-run Time Estimate: 1.5 days)
     standings_files = os.listdir(STANDINGS_DIR)
     standings_files = [s for s in standings_files if '.html' in s]
-    if not os.listdir(SCORES_DIR):
-        for f in standings_files:
-            filepath = os.path.join(STANDINGS_DIR, f)
-            await scrape_game(filepath)
-
+    for f in standings_files:
+        filepath = os.path.join(STANDINGS_DIR, f)
+        await scrape_game(filepath)
 
 if __name__ == '__main__':
     asyncio.run(main())  # Properly run async function
