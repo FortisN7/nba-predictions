@@ -138,4 +138,4 @@ def main():
 
 # Run the script
 if __name__ == '__main__':
-    main() # Time Estimate: ? (Started at 1am)
+    main() # Time Estimate: 3 hours
