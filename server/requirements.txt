@@ -1,0 +1,9 @@
+beautifulsoup4
+playwright
+pandas
+scikit-learn
+xgboost
+fastapi
+uvicorn[standard]
+apscheduler
+joblib

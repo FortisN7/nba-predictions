@@ -1,5 +1,7 @@
+import os
 import pandas as pd
 import numpy as np
+import joblib
 from sklearn.linear_model import RidgeClassifier
 from sklearn.feature_selection import SequentialFeatureSelector
 from sklearn.model_selection import TimeSeriesSplit
@@ -92,9 +94,16 @@ def create_model(df):
     preds1 = backtest(full, rr, sel2)
     print("Backtest accuracy:", accuracy_score(preds1['actual'], preds1['prediction']))
 
+    # ——— NEW: persist model and feature list ———
+    os.makedirs('models', exist_ok=True)
+    joblib.dump(rr,  os.path.join('models','ridge_classifier.joblib'))
+    joblib.dump(sel2, os.path.join('models','feature_selector.joblib'))
+    print("Saved model → models/ridge_classifier.joblib")
+    print("Saved features → models/feature_selector.joblib")
+
 # entry point
 def main():
-    df = pd.read_csv('nba_games.csv', index_col=0)
+    df = pd.read_csv('data/nba_games.csv', index_col=0)
     df = clean_data(df)
     create_model(df)
 
@@ -105,5 +114,6 @@ if __name__ == '__main__':
 $ python3 model.py
 Backtest accuracy: 0.6364154528182394
 
-New: Backtest accuracy: 0.6393188854489165
+New with data 2016-2025: Backtest accuracy: 0.6393188854489165
+New with data 2023-2025: Backtest accuracy: 0.6599118942731278
 '''

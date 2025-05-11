@@ -1,0 +1,7 @@
+{
+    "name": "nba-backend",
+    "version": "1.0.0",
+    "scripts": {
+      "start": "uvicorn main:app --reload --host 0.0.0.0 --port 4000"
+    }
+  }
