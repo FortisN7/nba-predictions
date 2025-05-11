@@ -1,141 +1,122 @@
-### Most code from https://www.youtube.com/watch?v=o6Ih934hADU
-
-# Import packages (Missing optional dependency 'lxml'.  Use pip or conda to install lxml. so python3 -m pip install --user lxml)
 import os
-import pandas as pd # python3 -m pip install --user pandas
+import numpy as np
+import pandas as pd
 from bs4 import BeautifulSoup
-from io import StringIO # Fixes warning message
+from io import StringIO
 
-# Directory where box score HTML files are stored
 SCORE_DIR = 'data/scores'
+OUTPUT_CSV = 'nba_games2.csv'
 
-# Get list of all .html files in the scores directory
-box_scores = os.listdir(SCORE_DIR)
-box_scores = [os.path.join(SCORE_DIR, f) for f in box_scores if f.endswith('.html')]
-
-# Function to parse HTML content into a BeautifulSoup object
 def parse_html(box_score):
     with open(box_score, encoding='utf-8') as f:
         html = f.read()
-    
-    # Parse with BeautifulSoup
     soup = BeautifulSoup(html, 'html.parser')
-
-    # Remove header rows that mess with table parsing
     [s.decompose() for s in soup.select('tr.over_header')]
     [s.decompose() for s in soup.select('tr.thead')]
-
     return soup
 
-# Read the final score from the line score table
 def read_line_score(soup):
-    line_score = pd.read_html(StringIO(str(soup)), attrs={'id': 'line_score'})[0]
+    df = pd.read_html(StringIO(str(soup)), attrs={'id': 'line_score'})[0]
+    cols = list(df.columns)
+    cols[0], cols[-1] = 'team', 'total'
+    df.columns = cols
+    return df[['team', 'total']]
 
-    # Fix column names to make things easier
-    cols = list(line_score.columns)
-    cols[0] = 'team'
-    cols[-1] = 'total'
-    line_score.columns = cols
-
-    # Only keep team name and total score
-    line_score = line_score[['team', 'total']]
-    return line_score
-
-# Read stats for a given team and stat type (basic or advanced)
 def read_stats(soup, team, stat):
-    df = pd.read_html(StringIO(str(soup)), attrs={'id': f'box-{team}-game-{stat}'}, index_col=0)[0]
+    df = pd.read_html(
+        StringIO(str(soup)),
+        attrs={'id': f'box-{team}-game-{stat}'},
+        index_col=0
+    )[0]
+    return df.apply(pd.to_numeric, errors='coerce')
 
-    # Try converting everything to numeric if possible (non-numeric entries become NaN)
-    df = df.apply(pd.to_numeric, errors='coerce')
-    return df
-
-# Extract the season info from the navigation links at the bottom
 def read_season_info(soup):
     nav = soup.select('#bottom_nav_container')[0]
     hrefs = [a['href'] for a in nav.find_all('a')]
-    
-    # Extract season string from second hyperlink
-    season = os.path.basename(hrefs[1]).split('_')[0]
-    return season
+    return os.path.basename(hrefs[1]).split('_')[0]
 
-# Main function to loop through all games and extract data
 def main():
     print('Starting parser-basketball-reference.py')
 
+    all_files = sorted(f for f in os.listdir(SCORE_DIR) if f.endswith('.html'))
+    all_paths = [os.path.join(SCORE_DIR, f) for f in all_files]
+
+    existing_df = None
+    master_cols = None
+
+    if os.path.exists(OUTPUT_CSV):
+        # read header to get exact column names (including duplicates)
+        with open(OUTPUT_CSV, 'r', encoding='utf-8') as f:
+            header = f.readline().rstrip('\n').split(',')
+        master_cols = header[1:]  # drop the index column name
+
+        # read without parsing dates: keep old 'date' strings intact
+        existing_df = pd.read_csv(OUTPUT_CSV, index_col=0, dtype=str)
+
+        processed = set(existing_df['source_file'])
+        to_process = [p for p in all_paths if p not in processed]
+        print(f"Found existing CSV. {len(processed)} processed; {len(to_process)} new.")
+    else:
+        to_process = all_paths
+        print("No existing CSV found; parsing all files.")
+
+    if not to_process:
+        print("No new games to parse. Exiting.")
+        return
+
     base_cols = None
-    games = []
-    
-    for box_score in box_scores:
+    new_games = []
+    for idx, box_score in enumerate(to_process, 1):
         soup = parse_html(box_score)
         line_score = read_line_score(soup)
-        teams = list(line_score['team'])  # Get the two teams that played
+        teams = list(line_score['team'])
 
         summaries = []
         for team in teams:
-            # Get basic and advanced stats
-            basic = read_stats(soup, team, 'basic')
+            basic    = read_stats(soup, team, 'basic')
             advanced = read_stats(soup, team, 'advanced')
-
-            # Get total stats (last row in both tables)
-            totals = pd.concat([basic.iloc[-1, :], advanced.iloc[-1, :]])
+            totals = pd.concat([basic.iloc[-1], advanced.iloc[-1]])
             totals.index = totals.index.str.lower()
-
-            # Get max individual player stats (all rows except the last)
-            maxes = pd.concat([basic.iloc[:-1, :].max(), advanced.iloc[:-1, :].max()])
+            maxes = pd.concat([basic.iloc[:-1].max(), advanced.iloc[:-1].max()])
             maxes.index = maxes.index.str.lower() + '_max'
 
-            # Combine totals and maxes into one summary row
-            summary = pd.concat([totals, maxes])
-
-            # Store base column names on first run (drop 'bpm' to avoid issues)
             if base_cols is None:
-                base_cols = list(summary.index.drop_duplicates(keep='first'))
-                base_cols = [b for b in base_cols if 'bpm' not in b]
+                cols = list(pd.concat([totals, maxes]).index.drop_duplicates())
+                base_cols = [c for c in cols if 'bpm' not in c]
 
-            # Filter to base columns only
-            summary = summary[base_cols]
-            summaries.append(summary)
+            summaries.append(pd.concat([totals, maxes])[base_cols])
 
-        # Combine both teams' summaries into one DataFrame
         summary = pd.concat(summaries, axis=1).T
-
-        # Combine with line scores
         game = pd.concat([summary, line_score], axis=1)
-
-        # Assign home (1) and away (0)
         game['home'] = [0, 1]
+        opp = game.iloc[::-1].reset_index()
+        opp.columns = [f"{c}_opp" for c in opp.columns]
+        full = pd.concat([game, opp], axis=1)
 
-        # Create opponent columns by flipping the DataFrame
-        game_opp = game.iloc[::-1].reset_index()
-        game_opp.columns += '_opp'
+        full['season']      = read_season_info(soup)
+        full['date']        = pd.to_datetime(os.path.basename(box_score)[:8], format='%Y%m%d')
+        full['won']         = full['total'] > full['total_opp']
+        full['source_file'] = box_score
 
-        # Merge with opponent data side-by-side
-        full_game = pd.concat([game, game_opp], axis=1)
+        new_games.append(full)
+        if idx % 100 == 0 or idx == len(to_process):
+            print(f"Parsed {idx}/{len(to_process)}")
 
-        # Add season info
-        full_game['season'] = read_season_info(soup)
+    new_df = pd.concat(new_games, ignore_index=True)
+    # convert new dates to 'YYYY-MM-DD' strings
+    new_df['date'] = new_df['date'].dt.strftime('%Y-%m-%d')
 
-        # Parse date from file name (e.g. '20230115_...' becomes datetime object)
-        full_game['date'] = os.path.basename(box_score)[:8]
-        full_game['date'] = pd.to_datetime(full_game['date'], format='%Y%m%d')
+    if existing_df is not None:
+        # stack existing and new as raw numpy arrays to preserve duplicate columns
+        existing_vals = existing_df.to_numpy()
+        new_vals      = new_df.to_numpy()
+        all_vals = np.vstack([existing_vals, new_vals])
+        combined = pd.DataFrame(all_vals, columns=master_cols)
+    else:
+        combined = new_df
 
-        # Add a boolean column for whether this team won
-        full_game['won'] = full_game['total'] > full_game['total_opp']
+    combined.to_csv(OUTPUT_CSV)
+    print(f"Appended {len(new_df)} new games. Saved to {OUTPUT_CSV}")
 
-        # Save game to list
-        games.append(full_game)
-
-        # Print progress every 100 games
-        if len(games) % 100 == 0:
-            print(f'{len(games)} / {len(box_scores)}')
-
-    # Combine all game data into one big DataFrame and write to CSV
-    games_df = pd.concat(games, ignore_index=True)
-    games_df.to_csv('nba_games.csv')
-    print('Output saved to nba_games.csv')
-
-    print('Finished parser-basketball-reference.py')
-
-# Run the script
 if __name__ == '__main__':
-    main() # Time Estimate: 3 hours
+    main()

@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from sklearn.linear_model import RidgeClassifier
 from sklearn.feature_selection import SequentialFeatureSelector
 from sklearn.model_selection import TimeSeriesSplit
@@ -6,114 +7,103 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import accuracy_score
 
 # Data cleaning
-def add_target(team):
-    team['target'] = team['won'].shift(-1)
-    return team 
-
 def clean_data(df):
-    df = df.sort_values('date')
-    df = df.reset_index(drop=True)
-    del df['mp.1']
-    del df['mp_opp.1']
-    del df['index_opp']
+    # sort & drop unused cols
+    df = df.sort_values('date').reset_index(drop=True)
+    df = df.drop(columns=['mp.1','mp_opp.1','index_opp'], errors=True)
 
-    df = df.groupby('team', group_keys=False).apply(add_target)
+    # vectorized next-game target
+    df['target'] = df.groupby('team')['won'].shift(-1)
+    df.loc[df['target'].isna(), 'target'] = 2
+    df['target'] = df['target'].astype(int)
 
-    df['target'][pd.isnull(df['target'])] = 2
-    df['target'] = df['target'].astype(int, errors='ignore')
+    # drop any columns still containing nulls
+    null_counts = df.isnull().sum()
+    to_keep = null_counts[null_counts == 0].index
+    return df[to_keep].copy()
 
-    nulls = pd.isnull(df).sum()
-    nulls = nulls[nulls > 0]
-    valid_columns = df.columns[~df.columns.isin(nulls.index)]
-
-    df = df[valid_columns].copy()
-
+# backtest helper
 def backtest(data, model, predictors, start=2, step=1):
-    all_predictions = []
-    
+    all_preds = []
     seasons = sorted(data['season'].unique())
-    
     for i in range(start, len(seasons), step):
-        season = seasons[i]
-        train = data[data['season'] < season]
-        test = data[data['season'] == season]
-        
+        train = data[data['season'] < seasons[i]]
+        test  = data[data['season'] == seasons[i]]
         model.fit(train[predictors], train['target'])
-        
         preds = model.predict(test[predictors])
-        preds = pd.Series(preds, index=test.index)
-        combined = pd.concat([test['target'], preds], axis=1)
-        combined.columns = ['actual', 'prediction']
-        
-        all_predictions.append(combined)
-    return pd.concat(all_predictions)
+        dfp  = pd.DataFrame({'actual': test['target'], 'prediction': preds}, index=test.index)
+        all_preds.append(dfp)
+    return pd.concat(all_preds)
 
+# rolling averages on numeric columns
 def find_team_averages(team):
-    rolling = team.rolling(10).mean()
-    return rolling
+    numeric_cols = team.select_dtypes(include=[np.number]).columns
+    return team[numeric_cols].rolling(10).mean()
 
-def shift_col(team, col_name):
-    next_col = team[col_name].shift(-1)
-    return next_col
+def add_shifted_cols(df, col_names):
+    shifted = {}
+    for c in col_names:
+        shifted[f"{c}_next"] = df.groupby('team')[c].shift(-1)
+    return pd.DataFrame(shifted, index=df.index)
 
-def add_col(df, col_name):
-    return df.groupby('team', group_keys=False).apply(lambda x: shift_col(x, col_name))
-
+# main model creation with only full backtest
 def create_model(df):
     rr = RidgeClassifier(alpha=1)
-
-    split = TimeSeriesSplit(n_splits=3)
-
-
-    sfs = SequentialFeatureSelector(rr, 
-                                    n_features_to_select=30, 
-                                    direction='forward',
-                                    cv=split,
-                                    n_jobs=1
-                                )
-    
-    removed_columns = ['season', 'date', 'won', 'target', 'team', 'team_opp']
-    selected_columns = df.columns[~df.columns.isin(removed_columns)]
-
+    tscv = TimeSeriesSplit(n_splits=3)
     scaler = MinMaxScaler()
-    df[selected_columns] = scaler.fit_transform(df[selected_columns])
-    
-    sfs.fit(df[selected_columns], df['target'])
-    
-    predictors = list(selected_columns[sfs.get_support()])
 
-    predictions = backtest(df, rr, predictors)
-    print(accuracy_score(predictions['actual'], predictions['prediction']))
-    
-    df.groupby(['home']).apply(lambda x: x[x['won'] == 1].shape[0] / x.shape[0])
+    # initial features (exclude metadata)
+    drop0 = ['season','date','won','target','team','team_opp', 'source_file']
+    features = [c for c in df.columns if c not in drop0]
+    df[features] = scaler.fit_transform(df[features])
 
-    df_rolling = df[list(selected_columns) + ['won', 'team', 'season']]
-    df_rolling = df_rolling.groupby(['team', 'season'], group_keys=False).apply(find_team_averages)
+    # compute rolling averages and next-game columns
+    roll = (
+        df[features + ['won','team','season']]
+        .groupby(['team','season'], group_keys=False)
+        .apply(find_team_averages, include_groups=False)
+        .dropna()
+    )
+    roll.columns = [f"{c}_10" for c in roll.columns]
+    shifted = add_shifted_cols(df, ['home','team_opp','date'])
+    df2 = pd.concat([df, roll, shifted], axis=1).dropna()
 
-    rolling_cols = [f'{col}_10' for col in df_rolling.columns]
-    df_rolling.columns = rolling_cols
-    df = pd.concat([df, df_rolling], axis=1)
-    df = df.dropna()
+    # merge opponent stats
+    opp_stats = df2[[c for c in df2.columns if c.endswith('_10')] + ['team_opp_next','date_next']]
+    full = df2.merge(
+        opp_stats,
+        left_on=['team','date_next'],
+        right_on=['team_opp_next','date_next'],
+        suffixes=('','_opp')
+    )
 
-    df['home_next'] = add_col(df, 'home')
-    df['team_opp_next'] = add_col(df, 'team_opp')
-    df['date_next'] = add_col(df, 'date')
+    # final feature selection on full set
+    drop1 = [c for c in full.columns if full[c].dtype == 'object'] + drop0
+    feats2 = [c for c in full.columns if c not in drop1]
+    sfs2 = SequentialFeatureSelector(rr,
+                                     n_features_to_select=30,
+                                     direction='forward',
+                                     cv=tscv,
+                                     n_jobs=1)
+    sfs2.fit(full[feats2], full['target'])
+    sel2 = [feats2[i] for i, flag in enumerate(sfs2.get_support()) if flag]
 
-    full = df.merge(df[rolling_cols + ['team_opp_next', 'date_next', 'team']], left_on=['team', 'date_next'], right_on=['team_opp_next', 'date_next'])
-    removed_columns = list(full.columns[full.dtypes == 'object']) + removed_columns
-    selected_columns = full.columns[~full.columns.isin(removed_columns)]
-    
-    sfs.fit(full[selected_columns], full['target'])
+    # full backtest
+    preds1 = backtest(full, rr, sel2)
+    print("Backtest accuracy:", accuracy_score(preds1['actual'], preds1['prediction']))
 
-    predictors = list(selected_columns[sfs.get_support()])
-
-    predictions = backtest(full, rr, predictors)
-    print(accuracy_score(predictions['actual'], predictions['prediction']))
-
+# entry point
 def main():
     df = pd.read_csv('nba_games.csv', index_col=0)
-    clean_data(df)
+    df = clean_data(df)
     create_model(df)
 
 if __name__ == '__main__':
     main()
+
+'''
+$ python3 model.py
+Backtest accuracy: 0.6364154528182394
+
+New: Backtest accuracy: 0.6393188854489165
+'''
