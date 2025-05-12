@@ -5,6 +5,7 @@ If predictions.csv missing: predict past 7 days.
 import os
 import requests
 import pandas as pd
+import numpy as np
 import joblib
 from datetime import datetime, timedelta
 from scraper_basketball_reference import main as scrape_main
@@ -13,6 +14,7 @@ from model import main as model_main, clean_data, find_team_averages, add_shifte
 from fastapi import FastAPI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 
 # Paths
 data_dir      = 'data'
@@ -158,9 +160,6 @@ def predict_and_append():
                 df_live[feat] = 0.0
 
         X = df_live[features]
-        # dump out for inspection
-        print(X)
-        X.to_csv('features_output.csv', index=False)
 
         df_new['prediction'] = model.predict(X)
         all_out.append(df_new[['date','team','team_opp','prediction']])
@@ -181,6 +180,15 @@ def predict_and_append():
 
 app = FastAPI()
 
+# allow your React dev server
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # or "*" for any
+    allow_credentials=True,
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 @app.on_event("startup")
 async def start_scheduler():
     run_pipeline()
@@ -192,6 +200,35 @@ async def start_scheduler():
 def manual_trigger():
     run_pipeline()
     return {"status": "pipeline completed"}
+
+@app.get("/predictions/last7")
+def get_last7_predictions():
+    # load and sort
+    df = pd.read_csv(csv_preds, parse_dates=['date'])
+    df = df.sort_values('date')
+
+    # take last 7 unique dates
+    dates = df['date'].dt.strftime('%Y-%m-%d').unique()[-7:]
+    df7 = df[df['date'].dt.strftime('%Y-%m-%d').isin(dates)]
+
+    # return as list of dicts
+    return df7.to_dict(orient='records')
+
+
+@app.get("/games/last7")
+def get_last7_games():
+    df = pd.read_csv(csv_games, parse_dates=['date'])
+    # only past or today’s games
+    today = pd.Timestamp.now().normalize()
+    df = df[df['date'] <= today]
+    df = df.sort_values('date')
+
+    dates = df['date'].dt.strftime('%Y-%m-%d').unique()[-7:]
+    df7 = df[df['date'].dt.strftime('%Y-%m-%d').isin(dates)]
+
+    df7 = df7.replace({np.nan: None})
+
+    return df7.to_dict(orient='records')
 
 def run_pipeline():
     #scrape_main()
