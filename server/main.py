@@ -231,9 +231,9 @@ def get_last7_games():
     return df7.to_dict(orient='records')
 
 def run_pipeline():
-    #scrape_main()
-    #parse_main()
-    #model_main()
+    scrape_main()
+    parse_main()
+    model_main()
     predict_and_append()
 
 if __name__ == '__main__':
