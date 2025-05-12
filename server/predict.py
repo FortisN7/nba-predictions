@@ -3,7 +3,7 @@ import pandas as pd
 import joblib
 
 # load parsed games
-df = pd.read_csv('data/nba_games2.csv', parse_dates=['date'])
+df = pd.read_csv('data/nba_games.csv', parse_dates=['date'])
 from model import clean_data, add_shifted_cols, find_team_averages
 df = clean_data(df)
 # rebuild features just like in model.py

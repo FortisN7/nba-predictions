@@ -7,3 +7,5 @@ fastapi
 uvicorn[standard]
 apscheduler
 joblib
+lxml
+requests
