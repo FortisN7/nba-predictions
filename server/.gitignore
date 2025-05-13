@@ -1,3 +1,4 @@
 data/scores
 data/standings
 .env
+__pycache__
