@@ -133,7 +133,9 @@ def predict_and_append():
             continue
         df_live = build_live_features(df_new)
         for feat in features:
-            df_live.setdefault(feat, 0.0)
+            if feat not in df_live.columns:
+                df_live[feat] = 0.0
+
         df_new['prediction'] = model.predict(df_live[features])
         all_out.append(df_new[['date','team','team_opp','prediction']])
 
